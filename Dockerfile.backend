@@ -1,0 +1,75 @@
+FROM php:8.3-fpm-alpine AS builder
+
+RUN apk add --no-cache --virtual .build-deps \
+    $PHPIZE_DEPS \
+    git curl unzip zip \
+    libzip-dev \
+    icu-dev \
+    postgresql-dev \
+    libpng-dev \
+    jpeg-dev \
+    freetype-dev \
+    libwebp-dev \
+    libxpm-dev \
+    oniguruma-dev \
+    libxml2-dev \
+    openssl-dev \
+    sqlite-dev
+
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \
+    && docker-php-ext-install -j$(nproc) \
+        gd \
+        bcmath \
+        opcache \
+        intl \
+        exif \
+        pcntl \
+        soap \
+        zip \
+        pdo \
+        pdo_pgsql \
+        pdo_sqlite
+
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+
+WORKDIR /var/www
+
+COPY . /var/www
+
+RUN composer install --no-interaction --no-plugins --no-scripts --no-dev --prefer-dist --optimize-autoloader
+RUN composer run-script post-autoload-dump --no-dev
+
+RUN php artisan config:cache && php artisan route:cache && php artisan view:cache
+
+FROM php:8.3-fpm-alpine AS production
+
+RUN apk add --no-cache \
+    libzip \
+    icu-libs \
+    libpq \
+    libpng \
+    jpeg \
+    freetype \
+    libwebp \
+    libxpm \
+    oniguruma \
+    libxml2 \
+    sqlite-libs \
+    procps
+
+COPY --from=builder /usr/local/etc/php/conf.d/ /usr/local/etc/php/conf.d/
+COPY --from=builder /usr/local/lib/php/extensions/ /usr/local/lib/php/extensions/
+
+RUN mv "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"
+
+WORKDIR /var/www
+
+COPY --from=builder /var/www /var/www
+
+RUN mkdir -p /var/www/database && \
+    touch /var/www/database/database.sqlite
+
+RUN chown -R www-data:www-data /var/www \
+    && chmod -R 775 /var/www/storage /var/www/bootstrap/cache  /var/www/database
+
+EXPOSE 9000
